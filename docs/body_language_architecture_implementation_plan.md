@@ -1,13 +1,13 @@
 # Blue Labs — Body Language (`bodylanguage.blue-labs.org`)
-**Architecture, Database Schema, and Implementation Master Plan**
 
----
+**Architecture, Database Schema, and Implementation Master Plan**
 
 ## 1. Executive Summary & Core Objectives
 
-**Body Language** is a self-hosted, privacy-first biometric and contextual telemetry platform developed by **Blue Labs**. It aggregates real-time health, body composition, nutrition, and environmental activity streams into a local PostgreSQL + TimescaleDB + PostGIS database, serving an interactive, event-driven "Futuristic Medicine" 3D/2D web interface over FastAPI.
+**Body Language** is a self-hosted, privacy-first biometric and contextual telemetry platform developed by **Blue Labs**. It aggregates real-time health, body composition, nutrition, and environmental activity streams into a local PostgreSQL + TimescaleDB + PostGIS database, serving an interactive, event-driven 3D/2D web interface over FastAPI.
 
 ### Primary Hardware & Sensor Ecosystem
+
 * **Continuous Glucose Monitor (CGM):** Dexcom G7 (5-minute interstitial glucose, trend rate, arrows, and Clarity/Share reconciliation).
 * **Wearable Vitals & Activity:** Samsung Galaxy Watch 9 paired with Samsung Galaxy S26 Ultra (heart rate, $SpO_2$, step counts, sleep, skin temperature, GPS/activity state via Android Health Connect).
 * **Smart Body Fat Scale:** Ablegrid `FI2016LB` ("A-Scale X" / Fitdays protocol) captured locally via Bluetooth Low Energy (BLE) with transparent Python bioelectrical impedance ($\Omega$) mathematical equations and side-by-side Fitdays calculation verification.
@@ -16,19 +16,20 @@
 
 ---
 
-## 2. Target Technology Stack
+## 2. Target Technology Stack & Modern Semantics Mandate
 
 | Layer | Technology / Specification |
 | :--- | :--- |
 | **OS & Kernel** | Linux Kernel 7.2+ (Arch Linux / Ubuntu) with native in-tree `btusb` BLE support |
-| **Runtime & Packaging** | Python 3.14+ (forward-compatible with 3.15), managed via **Poetry** |
+| **Runtime & Packaging** | **Python 3.14+** (forward-compatible with 3.15), managed via **Poetry**. Uses modern PEP 695 `type` aliases, generic syntax, `asyncio.TaskGroup`, structural pattern matching (`match`/`case`), and `@dataclass(slots=True)`. |
+| **Validation & Settings** | **Pydantic v2** strict mode validation across all API boundaries, WebSocket frames, and database `tunables`. Bootstrap `.env` holds only `DATABASE_URL` and `BLUELABS_MASTER_KEY`; all runtime tunables live in the PostgreSQL `tunables` meta table. |
 | **Web Framework** | **FastAPI** (100% async), Uvicorn ASGI with WebSockets (`uvloop`) |
 | **Database Engine** | **PostgreSQL 16/17** + **TimescaleDB** (Community/Apache 2.0) + **PostGIS** + `pgcrypto` |
-| **Frontend Architecture** | **Jinja2** HTML5 shell + **Vanilla ES6+ JavaScript** (`importmap`), **Three.js** (WebGL2/WebGPU), Google Maps JS API (Polygon Geofence Editor). **No HTMX, no React/SPA bloat, no full-DOM swaps.** |
-| **DOM Update Strategy** | Async WebSocket Event Bus performing surgical updates on individual `[data-telemetry-id]` DOM nodes and Three.js shader uniforms. |
-| **Authentication** | Google OAuth2 + FIDO2/WebAuthn Passkeys (`py_webauthn`) + TOTP (`pyotp`). Seamless 7-day rolling refresh sessions with quick Passkey/OTP re-verification. |
-| **Reverse Proxy & TLS** | **Nginx** with Let's Encrypt TLS 1.3 (`bodylanguage.blue-labs.org`) and WebSocket upgrade headers. |
-| **Local AI Node** | NVIDIA RTX 3090 (24 GB VRAM) running **Ollama** (`qwen2.5vl:7b`) for Pass-1 routing & label OCR. |
+| **HTML5 Semantics** | Strict structural consistency across all views: `<header>`, `<nav>`, `<main>`, `<aside>`, `<footer>`, native `<dialog>` with blurred `::backdrop` scrims, and Popover API (`popover="auto"`) triggered by vertical tri-dot kebab (`⋮`) buttons. |
+| **CSS Architecture** | **Modern Nested & `@layer` CSS** (`@layer reset, tokens, themes, layout, components, utilities`). 100% relative color derivation via **`oklch(from ...)`**, `light-dark()`, CSS Grid/Subgrid, and container queries. Includes three core themes (`future-medicine`, `black-cat`, `forestry`) and three color modes (`light`, `dark`, `device`). |
+| **JavaScript Semantics** | **Vanilla ES2025+ Modules** (`importmap`), **Three.js**, `requestAnimationFrame`-synchronized DOM/Canvas mutations, anticipatory `<link rel="modulepreload">` / `fetch` prefetching, and **Offline Write-Safety Queue** (`localStorage` + `IndexedDB`) for resilient mutations. |
+| **Time & Unit Discipline** | **Strict UTC** (`TIMESTAMPTZ` / ISO-8601 `Z`) throughout all Python services, SQL storage, and WebSocket payloads. Converted to user timezone and preferred **Units of Measure** (`mg/dL` vs `mmol/L`, `lbs` vs `kg`, `°F` vs `°C`, `in` vs `cm`) strictly at the final presentation layer via `Intl.DateTimeFormat` and client unit-conversion formatters. |
+| **Testing** | **Pytest** (`pytest-asyncio`) focused on thorough, pragmatic unit and integration coverage of BIA math, Pydantic models, `tunables` resolution, crypto vaulting, and offline sync idempotency without overengineered mocks. |
 
 ---
 
@@ -38,7 +39,7 @@
 body-language/
 ├── PLAN.md                                   # This master architecture document
 ├── pyproject.toml                            # Poetry dependencies & Python 3.14+ config
-├── .env.example                              # Template for master encryption key & bootstrap env
+├── .env.example                              # Bootstrap-only env (DB URL + Master Key)
 ├── deploy/
 │   ├── nginx/
 │   │   └── bodylanguage.blue-labs.org.conf   # Nginx TLS 1.3, HTTP/2, WebSocket reverse proxy
@@ -47,15 +48,17 @@ body-language/
 │       ├── body-language-ble.service         # Ablegrid BLE scale listener daemon
 │       └── body-language-seat.service        # Workstation keyboard/idle context daemon
 ├── migrations/
-│   └── 001_initial_schema.sql                # TimescaleDB, PostGIS, RBAC, and Vault DDL
+│   └── 001_initial_schema.sql                # Tunables, Users, TimescaleDB, PostGIS, Vault DDL
 ├── src/
 │   └── body_language/
 │       ├── __init__.py
 │       ├── main.py                           # FastAPI entry point, lifespan tasks, routers
 │       ├── core/
-│       │   ├── config.py                     # Pydantic Settings loader
+│       │   ├── bootstrap.py                  # Minimal .env bootstrap (DB URI + Master Key only)
+│       │   ├── tunables.py                   # Async DB `tunables` registry with LISTEN/NOTIFY cache
 │       │   ├── crypto.py                     # Fernet / AES-GCM credential encryption & expiry check
-│       │   └── websocket_bus.py              # Per-user async WebSocket pub/sub manager
+│       │   ├── schemas.py                    # Pydantic v2 strict models (UTC enforced)
+│       │   └── websocket_bus.py              # Per-user async WebSocket pub/sub + Presence tracker
 │       ├── auth/
 │       │   ├── oauth_google.py               # Google OAuth2 login & callback
 │       │   ├── webauthn_passkey.py           # Passkey registration & 7-day fast re-auth
@@ -77,20 +80,31 @@ body-language/
 │       └── web/
 │           ├── routes.py                     # View & JSON API endpoints
 │           ├── templates/
-│           │   ├── base.html.j2              # Master futuristic HUD chrome & avatar alert drawer
-│           │   └── dashboard.html.j2         # Responsive desktop/mobile telemetry grid
+│           │   ├── base.html.j2              # Master structural shell (<header>, <nav>, <main>, <aside>, <footer>)
+│           │   ├── dashboard.html.j2         # Responsive desktop/mobile telemetry grid
+│           │   └── partials/
+│           │       ├── overlays.html.j2      # Blurred-scrim <dialog> containers (Meals, Vault, Formulas, Profile)
+│           │       └── header_presence.html.j2 # Top-right Google Docs-style presence & Avatar kebab menu
 │           └── static/
 │               ├── css/
-│               │   └── hud.css               # Futuristic medical styling, mobile breakpoints
+│               │   └── main.css              # @layer + nested CSS + oklch(from ...) 3-theme engine
 │               └── js/
-│                   ├── app.js                # Main ES module bootstrapper
-│                   ├── bus.js                # Surgical WebSocket DOM & 3D uniform dispatcher
+│                   ├── app.js                # Main ES module bootstrapper & anticipatory prefetcher
+│                   ├── activity_indicator.js # rAF-driven undulating horizontal tri-dot controller
+│                   ├── offline_queue.js      # localStorage/IndexedDB write-ahead queue & replay engine
+│                   ├── units_time.js         # Final-layer UTC -> Local time & Unit of Measure converter
+│                   ├── bus.js                # Surgical WebSocket DOM, Presence & 3D uniform dispatcher
 │                   ├── three_twin.js         # Three.js Holographic Digital Twin & Metabolic Ribbon
 │                   ├── geofence_editor.js    # Interactive Google Maps polygon editor
 │                   ├── meal_adjuster.js      # AI meal uploader, portion slider, item toggles
 │                   └── vault_manager.js      # Encrypted key management & avatar badge handler
-└── android_companion/                        # Optional S26 Ultra Kotlin Health Connect gateway spec
-    └── README.md
+└── tests/                                    # Thorough, pragmatic Pytest suite
+    ├── conftest.py
+    ├── test_bia_formulas.py
+    ├── test_tunables_registry.py
+    ├── test_crypto_vault.py
+    ├── test_pydantic_utc_schemas.py
+    └── test_offline_idempotency.py
 ```
 
 ---
@@ -132,6 +146,10 @@ pytest = "^8.3.0"
 pytest-asyncio = "^0.24.0"
 ruff = "^0.8.0"
 
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
@@ -141,7 +159,7 @@ build-backend = "poetry.core.masonry.api"
 
 ## 5. Database Schema (`migrations/001_initial_schema.sql`)
 
-Designed for **PostgreSQL + TimescaleDB + PostGIS**. Supports multi-user family accounts, granular read-only sharing, encrypted API/device credentials with expiration warnings, transparent BIA scale equations, and spatial geofencing.
+All timestamps are strictly `TIMESTAMPTZ` stored in **UTC**. All non-bootstrap application configurations and runtime parameters reside in the `tunables` meta table with PostgreSQL `NOTIFY` invalidation so changes take effect immediately without restarting FastAPI.
 
 ```sql
 -- Enable required extensions
@@ -149,7 +167,49 @@ CREATE EXTENSION IF NOT EXISTS timescaledb;
 CREATE EXTENSION IF NOT EXISTS postgis;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
--- 1. Users & Biometric Baseline (Used for Scale BIA Equations)
+-- Enforce UTC at database level
+ALTER DATABASE body_language SET timezone TO 'UTC';
+
+-- 0. Meta Table: Runtime Configuration & Tunables (`tunables`)
+-- Holds all non-bootstrap settings (polling intervals, AI model names, BLE thresholds, rate limits, etc.)
+CREATE TABLE tunables (
+    key TEXT PRIMARY KEY,
+    value JSONB NOT NULL,
+    value_type TEXT NOT NULL CHECK (value_type IN ('int', 'float', 'bool', 'str', 'json')),
+    category TEXT NOT NULL DEFAULT 'general', -- 'ingestion', 'ai_vision', 'security', 'ui', 'ble'
+    description TEXT NOT NULL,
+    is_hot_reloadable BOOLEAN DEFAULT TRUE,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC'),
+    updated_by UUID
+);
+
+-- Trigger to broadcast live tunable changes to FastAPI workers via LISTEN/NOTIFY
+CREATE OR REPLACE FUNCTION notify_tunable_change() RETURNS trigger AS $$
+BEGIN
+    PERFORM pg_notify('tunables_updated', row_to_json(NEW)::text);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_tunables_notify
+AFTER INSERT OR UPDATE ON tunables
+FOR EACH ROW EXECUTE FUNCTION notify_tunable_change();
+
+-- Seed default runtime tunables
+INSERT INTO tunables (key, value, value_type, category, description) VALUES
+('dexcom.poll_interval_seconds', '300'::jsonb, 'int', 'ingestion', 'Polling interval for Dexcom G7 readings'),
+('ble.scale_rssi_min_dbm', '-90'::jsonb, 'int', 'ble', 'Minimum BLE RSSI threshold for Ablegrid scale packets'),
+('ble.scale_debounce_seconds', '30'::jsonb, 'int', 'ble', 'Cooldown window after locking in a stabilized weigh-in'),
+('ai.pass1_ollama_url', '"http://127.0.0.1:11434"'::jsonb, 'str', 'ai_vision', 'Local RTX 3090 Ollama endpoint'),
+('ai.pass1_model', '"qwen2.5vl:7b"'::jsonb, 'str', 'ai_vision', 'Local model for Pass-1 classification & Nutrition OCR'),
+('ai.pass2_provider', '"claude"'::jsonb, 'str', 'ai_vision', 'Cloud Vision provider for complex food photos (claude | gemini)'),
+('ai.pass2_model', '"claude-3-7-sonnet-latest"'::jsonb, 'str', 'ai_vision', 'Model identifier for Pass-2 volumetric food estimation'),
+('auth.session_rolling_days', '7'::jsonb, 'int', 'security', 'Rolling lifetime for Passkey/OTP verified sessions'),
+('vault.default_warn_days', '7'::jsonb, 'int', 'security', 'Days prior to key expiration to illuminate avatar badge'),
+('seat.idle_threshold_seconds', '180'::jsonb, 'int', 'ingestion', 'Seconds without input before leaving AT_KEYBOARD state')
+ON CONFLICT (key) DO NOTHING;
+
+-- 1. Users, Biometric Baseline & Profile Preferences (Theme, Color Mode, Units of Measure)
 CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email TEXT UNIQUE NOT NULL,
@@ -160,7 +220,20 @@ CREATE TABLE users (
     biological_sex TEXT CHECK (biological_sex IN ('male', 'female')) NOT NULL,
     height_cm NUMERIC(5,2) NOT NULL,
     totp_secret_encrypted BYTEA,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    -- UI Theme & Appearance Options
+    theme_name TEXT NOT NULL DEFAULT 'future-medicine'
+        CHECK (theme_name IN ('future-medicine', 'black-cat', 'forestry')),
+    color_mode TEXT NOT NULL DEFAULT 'device'
+        CHECK (color_mode IN ('light', 'dark', 'device')),
+    -- Units of Measure Preferences (Stored as canonical JSONB, validated by Pydantic)
+    unit_preferences JSONB NOT NULL DEFAULT '{
+        "glucose": "mg/dL",
+        "mass": "lbs",
+        "length": "in",
+        "temperature": "F",
+        "energy": "kcal"
+    }'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC')
 );
 
 -- 2. WebAuthn Passkey Credentials
@@ -171,32 +244,29 @@ CREATE TABLE user_passkeys (
     sign_count BIGINT NOT NULL DEFAULT 0,
     device_name TEXT,
     transports TEXT[],
-    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC'),
     last_used_at TIMESTAMPTZ
 );
 
 -- 3. Multi-Tenant Family Profile Sharing (RBAC)
--- Users always have Read/Write on their own user_id.
--- Rows here grant Read-Only visibility of specific scopes to family members.
 CREATE TABLE profile_shares (
     owner_user_id UUID REFERENCES users(id) ON DELETE CASCADE,
     viewer_user_id UUID REFERENCES users(id) ON DELETE CASCADE,
     scopes TEXT[] DEFAULT ARRAY['glucose', 'vitals', 'scale', 'meals', 'context'],
-    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC'),
     PRIMARY KEY (owner_user_id, viewer_user_id)
 );
 
 -- 4. Encrypted Credential & API Key Vault
--- Stores per-user device tokens (Dexcom, Fitdays, S26 Webhook) and App Owner keys (Claude, Gemini, Maps)
 CREATE TABLE credential_vault (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    is_system_wide BOOLEAN DEFAULT FALSE, -- True for App Owner's shared Vision/Maps API keys
-    provider TEXT NOT NULL,               -- 'dexcom', 'claude_api', 'gemini_api', 'google_maps', 's26_gateway'
+    is_system_wide BOOLEAN DEFAULT FALSE,
+    provider TEXT NOT NULL,
     key_label TEXT NOT NULL,
-    encrypted_payload BYTEA NOT NULL,     -- Encrypted with BLUELABS_MASTER_KEY via Fernet/AES-GCM
-    issued_at TIMESTAMPTZ DEFAULT NOW(),
-    expires_at TIMESTAMPTZ,               -- Nullable; drives UI avatar warning badge
+    encrypted_payload BYTEA NOT NULL,
+    issued_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC'),
+    expires_at TIMESTAMPTZ,
     warn_days_before INTEGER DEFAULT 7,
     last_verified_at TIMESTAMPTZ,
     status TEXT DEFAULT 'active'
@@ -206,16 +276,16 @@ CREATE TABLE credential_vault (
 CREATE TABLE geofences (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    label TEXT NOT NULL,                  -- e.g., 'Main Desk', 'Front & Back Lawn', 'Gym'
-    activity_category TEXT NOT NULL,      -- 'SEDENTARY_KEYBOARD', 'YARD_WORK', 'WORKOUT', 'HOME_GENERAL'
+    label TEXT NOT NULL,
+    activity_category TEXT NOT NULL,
     color_hex TEXT DEFAULT '#00F0FF',
     boundary GEOMETRY(POLYGON, 4326) NOT NULL,
     extrusion_height_m REAL DEFAULT 3.5,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC')
 );
 CREATE INDEX idx_geofences_boundary ON geofences USING GIST (boundary);
 
--- 6. Hypertable: Continuous Glucose Readings (Dexcom G7)
+-- 6. Hypertable: Continuous Glucose Readings (Dexcom G7 - Canonical mg/dL & mmol/L)
 CREATE TABLE glucose_readings (
     time TIMESTAMPTZ NOT NULL,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -232,29 +302,29 @@ SELECT create_hypertable('glucose_readings', 'time');
 CREATE TABLE vital_telemetry (
     time TIMESTAMPTZ NOT NULL,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    metric_type TEXT NOT NULL,            -- 'heart_rate', 'spo2', 'steps_delta', 'skin_temp', 'sleep_stage'
+    metric_type TEXT NOT NULL,
     value NUMERIC(8,2) NOT NULL,
     unit TEXT NOT NULL,
-    source_device TEXT DEFAULT 'galaxy_watch_9'
+    client_mutation_id UUID,              -- Idempotency token for offline queue replay
+    source_device TEXT DEFAULT 'galaxy_watch_9',
+    UNIQUE (time, user_id, metric_type)
 );
 SELECT create_hypertable('vital_telemetry', 'time');
 CREATE INDEX idx_vitals_user_metric ON vital_telemetry (user_id, metric_type, time DESC);
 
--- 8. Hypertable: Ablegrid Scale Measurements & Formula Verification
+-- 8. Hypertable: Ablegrid Scale Measurements & Formula Verification (Canonical kg + lbs)
 CREATE TABLE scale_measurements (
     time TIMESTAMPTZ NOT NULL,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     weight_kg NUMERIC(5,2) NOT NULL,
     weight_lbs NUMERIC(5,2) NOT NULL,
     impedance_ohms INTEGER,
-    -- Direct Python Formula Calculations
     calc_bmi NUMERIC(4,2),
     calc_body_fat_pct NUMERIC(4,2),
     calc_lbm_kg NUMERIC(5,2),
     calc_muscle_mass_kg NUMERIC(5,2),
     calc_water_pct NUMERIC(4,2),
     calc_visceral_fat NUMERIC(4,1),
-    -- Fitdays / External Reported Values (for delta verification)
     external_body_fat_pct NUMERIC(4,2),
     external_muscle_mass_kg NUMERIC(5,2),
     external_water_pct NUMERIC(4,2),
@@ -270,31 +340,30 @@ CREATE TABLE context_events (
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     location GEOMETRY(POINT, 4326),
     matched_geofence_id UUID REFERENCES geofences(id) ON DELETE SET NULL,
-    posture_state TEXT NOT NULL,          -- 'AT_KEYBOARD', 'STILL', 'WALKING', 'MOWING', 'IN_VEHICLE'
-    kpm_rate INTEGER,                     -- Keystrokes/actions per minute from Linux desktop daemon
+    posture_state TEXT NOT NULL,
+    kpm_rate INTEGER,
     heart_rate_snapshot SMALLINT,
-    source TEXT NOT NULL                  -- 'workstation_daemon' | 's26_ultra_gateway'
+    client_mutation_id UUID,
+    source TEXT NOT NULL
 );
 SELECT create_hypertable('context_events', 'time');
 
--- 10. AI-Assisted Meal Logs with Live Portion Adjustment
+-- 10. AI-Assisted Meal Logs with Offline Write Idempotency & Portion Adjustment
 CREATE TABLE meal_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    client_mutation_id UUID UNIQUE,       -- Guarantees safe offline queue replay without duplicates
+    time TIMESTAMPTZ NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC'),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     photo_url TEXT,
     image_classification TEXT CHECK (image_classification IN ('FOOD_PHOTO', 'NUTRITION_CHART', 'MANUAL')),
     pass1_model TEXT DEFAULT 'ollama/qwen2.5vl:7b',
     pass2_model TEXT,
-    -- Base 100% Estimate from AI or Nutrition Label
     base_calories INTEGER NOT NULL,
     base_carbs_g NUMERIC(6,2) NOT NULL,
     base_protein_g NUMERIC(6,2) NOT NULL,
     base_fat_g NUMERIC(6,2) NOT NULL,
     base_fiber_g NUMERIC(6,2) DEFAULT 0,
-    -- Adjustable Consumed Multiplier (0.0 = didn't eat, 0.5 = ate half, 1.5 = ate 150%)
     consumed_ratio NUMERIC(4,2) DEFAULT 1.00 NOT NULL,
-    -- Computed Effective Totals (Generated Columns)
     effective_calories INTEGER GENERATED ALWAYS AS (ROUND(base_calories * consumed_ratio)) STORED,
     effective_carbs_g NUMERIC(6,2) GENERATED ALWAYS AS (ROUND(base_carbs_g * consumed_ratio, 2)) STORED,
     effective_protein_g NUMERIC(6,2) GENERATED ALWAYS AS (ROUND(base_protein_g * consumed_ratio, 2)) STORED,
@@ -306,186 +375,617 @@ CREATE TABLE meal_logs (
 
 ---
 
-## 6. Core Backend Specifications
+## 6. Core Backend Specifications (Python 3.14+ & Pydantic v2)
 
-### 6.1 Authentication, Passkeys & 7-Day Rolling Sessions (`src/body_language/auth/`)
-1. **Primary Identity:** Users authenticate initially via **Google OAuth2** (`authlib`).
-2. **Second Factor & Fast Re-Auth:** Users enroll a **WebAuthn Passkey** (stored in `user_passkeys`—works with S26 Ultra fingerprint/screen lock and Chrome desktop hardware keys) and/or a **TOTP** authenticator app (`pyotp`).
-3. **7-Day Rolling Session:**
-   * Upon Passkey or TOTP verification, the server issues an `HttpOnly`, `Secure`, `SameSite=Lax` signed session cookie valid for **7 days**.
-   * When the 7-day window expires (or when accessing the Encrypted Credential Vault), the UI triggers a non-disruptive modal overlay calling `navigator.credentials.get()` (Passkey biometric tap) or a 6-digit OTP prompt over WebSocket/Fetch without losing current page state.
+### 6.1 Database `tunables` Registry (`src/body_language/core/tunables.py`)
 
-### 6.2 Encrypted Credential Vault & Avatar Renewal Monitor (`src/body_language/core/crypto.py`)
-* All user and system API keys are encrypted at rest using `cryptography.fernet.Fernet` initialized from `BLUELABS_MASTER_KEY`.
-* **Expiration Tracking:** Every key in `credential_vault` supports an optional `expires_at` timestamp and `warn_days_before` threshold (default 7 days).
-* **UI Notification Under User Avatar:**
-  * On WebSocket connect (and every 6 hours via `key_expiry_monitor.py`), the server evaluates all keys belonging to the active user (plus system-wide keys if `is_app_owner = True`).
-  * If any key is within its warning window or expired, a `key_expiry_alert` event is pushed to the top-right User Profile Avatar, illuminating a glowing amber/crimson badge and populating the quick-renewal dropdown drawer.
+Only `DATABASE_URL` and `BLUELABS_MASTER_KEY` are read from `.env` at process launch. Everything else is dynamically served from the `tunables` table and kept hot in memory via `LISTEN tunables_updated`.
 
-### 6.3 Transparent Ablegrid Scale BLE & BIA Math (`src/body_language/ingestion/scale_ble.py`)
-Uses a high-gain USB Bluetooth adapter on Linux Kernel 7.2+ (`btusb`) with `bleak` to capture broadcasts from the Ablegrid `FI2016LB`.
+```python
+import asyncio
+import json
+from typing import Any
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine
 
-#### Viewable Biometric Equations (Rendered in UI Formula Inspector)
-Given Weight $W_{\text{kg}}$, Height $H_{\text{cm}}$ ($H_{\text{m}} = H_{\text{cm}}/100$), Impedance $Z$ ($\Omega$), Age $A$ (years), and Sex coefficient $S \in \{1\text{ (male)}, 0\text{ (female)}\}$:
+type TunableKey = str
+type TunableValue = int | float | bool | str | dict[str, Any] | list[Any]
 
-1. **Body Mass Index (BMI):**
-   $$\text{BMI} = \frac{W_{\text{kg}}}{H_{\text{m}}^2}$$
-2. **Resistive Index ($RI$):**
-   $$RI = \frac{H_{\text{cm}}^2}{Z}$$
-3. **Lean Body Mass ($\text{LBM}_{\text{kg}}$):**
-   $$\text{LBM}_{\text{kg}} = 0.485 \cdot RI + 0.338 \cdot W_{\text{kg}} + 5.32 + 3.82 \cdot S - 0.095 \cdot A$$
-4. **Body Fat Percentage ($\text{BF}\%$):**
-   $$\text{BF}\% = \left(\frac{W_{\text{kg}} - \text{LBM}_{\text{kg}}}{W_{\text{kg}}}\right) \times 100$$
-5. **Total Body Water Percentage ($\text{TBW}\%$):**
-   $$\text{TBW}\% = \left(\frac{0.732 \times \text{LBM}_{\text{kg}}}{W_{\text{kg}}}\right) \times 100$$
-6. **Skeletal Muscle Mass ($\text{SMM}_{\text{kg}}$):**
-   $$\text{SMM}_{\text{kg}} = \text{LBM}_{\text{kg}} \times (0.54 \cdot S + 0.48 \cdot (1 - S))$$
-7. **Visceral Fat Rating ($\text{VFR}$):**
-   $$\text{VFR} = \max\left(1.0,\; 0.32 \cdot \text{BMI} + 0.08 \cdot A + 1.8 \cdot S - 0.008 \cdot RI\right)$$
 
-The UI displays these equations alongside a comparison table showing **Blue Labs Direct Calculation** vs. **Fitdays Reported Calculation** and the percentage delta.
+class TunablesRegistry:
+    """In-memory async cache backed by PostgreSQL `tunables` table + LISTEN/NOTIFY."""
 
-### 6.4 Two-Pass Hybrid AI Meal Pipeline (`src/body_language/services/meal_vision.py`)
-1. **Pass 1 — Local RTX 3090 (`Ollama` / `qwen2.5vl:7b`):**
-   * Inspects the uploaded image at zero cloud cost.
-   * Prompt returns strict JSON: `{"type": "NUTRITION_CHART" | "FOOD_PHOTO", "confidence": 0.98}`.
-   * **If `NUTRITION_CHART`:** `qwen2.5vl:7b` immediately performs structured OCR on the nutrition facts label, extracting serving size, calories, carbs, fat, fiber, and protein locally on the 3090.
-2. **Pass 2 — Cloud Escalation for `FOOD_PHOTO`:**
-   * If Pass 1 identifies a complex plated meal (`FOOD_PHOTO`), the service decrypts the App Owner's configured Cloud Vision key (Claude / Gemini Pro Vision) from `credential_vault`.
-   * Requests an itemized array of detected foods on the plate with estimated gram weights and macronutrients:
-     ```json
-     {
-       "items": [
-         {"name": "Grilled Ribeye Steak", "grams": 220, "calories": 640, "carbs_g": 0, "protein_g": 62, "fat_g": 44, "included": true},
-         {"name": "Garlic Mashed Potatoes", "grams": 180, "calories": 210, "carbs_g": 32, "protein_g": 4, "fat_g": 7, "included": true}
-       ]
-     }
-     ```
-3. **Interactive Portion Adjustment:**
-   * The frontend renders individual item checkboxes (in case you didn't eat the side dish) and a master **Consumed Percentage Slider (`0%` to `200%`)**.
-   * Sliding the bar dispatches a lightweight WebSocket event (`adjust_meal_portion`) that recalculates `effective_calories` and `effective_carbs_g` in real time.
+    def __init__(self, engine: AsyncEngine) -> None:
+        self._engine = engine
+        self._cache: dict[TunableKey, TunableValue] = {}
+        self._lock = asyncio.Lock()
+
+    async def initialize(self) -> None:
+        """Loads all tunables from PostgreSQL on FastAPI startup."""
+        async with self._engine.connect() as conn:
+            result = await conn.execute(text("SELECT key, value FROM tunables"))
+            async with self._lock:
+                self._cache = {row.key: row.value for row in result}
+
+    def get[T: TunableValue](self, key: TunableKey, default: T) -> T:
+        """Type-safe generic retrieval of a tunable parameter."""
+        val = self._cache.get(key, default)
+        return val  # type: ignore[return-value]
+
+    async def set(self, key: TunableKey, value: TunableValue, value_type: str, description: str = "") -> None:
+        """Upserts a tunable in PostgreSQL; trigger automatically notifies workers."""
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                text("""
+                    INSERT INTO tunables (key, value, value_type, description, updated_at)
+                    VALUES (:k, CAST(:v AS jsonb), :vt, :desc, NOW() AT TIME ZONE 'UTC')
+                    ON CONFLICT (key) DO UPDATE
+                    SET value = EXCLUDED.value,
+                        updated_at = EXCLUDED.updated_at
+                """),
+                {"k": key, "v": json.dumps(value), "vt": value_type, "desc": description},
+            )
+        async with self._lock:
+            self._cache[key] = value
+```
+
+### 6.2 Strict UTC & Unit Preference Pydantic Schemas (`src/body_language/core/schemas.py`)
+
+```python
+from datetime import datetime, timezone
+from typing import Literal
+from uuid import UUID
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+type ThemeName = Literal["future-medicine", "black-cat", "forestry"]
+type ColorMode = Literal["light", "dark", "device"]
+type GlucoseUnit = Literal["mg/dL", "mmol/L"]
+type MassUnit = Literal["lbs", "kg"]
+type LengthUnit = Literal["in", "cm"]
+type TempUnit = Literal["F", "C"]
+
+
+class UnitPreferences(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    glucose: GlucoseUnit = "mg/dL"
+    mass: MassUnit = "lbs"
+    length: LengthUnit = "in"
+    temperature: TempUnit = "F"
+    energy: Literal["kcal", "kJ"] = "kcal"
+
+
+class ProfileOptionsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    theme_name: ThemeName
+    color_mode: ColorMode
+    unit_preferences: UnitPreferences
+
+
+class TelemetryMutationPayload(BaseModel):
+    """Base schema for queued client writes enforcing UTC timestamps & idempotency."""
+    model_config = ConfigDict(extra="forbid")
+
+    client_mutation_id: UUID
+    recorded_at_utc: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @field_validator("recorded_at_utc")
+    @classmethod
+    def ensure_utc(cls, v: datetime) -> datetime:
+        if v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v.astimezone(timezone.utc)
+```
 
 ---
 
-## 7. Frontend Architecture: "Futuristic Medicine" HUD & Three.js
+## 7. Frontend Architecture: Structural Semantics, `oklch` Theme Engine & UX
 
-### 7.1 Zero-Bloat Surgical Event Bus (`bus.js`)
-* All dynamic values in the Jinja2 template carry a `data-telemetry-id` attribute (e.g., `<span data-telemetry-id="cgm-current-mgdl">104</span>`).
-* Incoming WebSocket frames look like:
-  ```json
+### 7.1 Universal Page Structure (`src/body_language/web/templates/base.html.j2`)
+
+Every page shares the exact same semantic skeleton. Non-full-page interactions open inside `<dialog class="scrim-overlay">` modals with blurred backdrops, and menus open via vertical tri-dot kebab (`⋮`) triggers.
+
+```html
+<!DOCTYPE html>
+<html lang="en"
+      data-theme="{{ user.theme_name | default('future-medicine') }}"
+      data-color-mode="{{ user.color_mode | default('device') }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Body Language — Blue Labs</title>
+
+  <!-- Anticipatory Resource Preloading -->
+  <link rel="preload" href="/static/css/main.css" as="style">
+  <link rel="modulepreload" href="/static/js/app.js">
+  <link rel="modulepreload" href="/static/js/bus.js">
+  <link rel="modulepreload" href="/static/js/activity_indicator.js">
+  <link rel="modulepreload" href="/static/js/offline_queue.js">
+  <link rel="stylesheet" href="/static/css/main.css">
+
+  <script type="importmap">
   {
-    "event_type": "telemetry_tick",
-    "domain": "glucose",
-    "target_id": "cgm-current-mgdl",
-    "value": "108",
-    "trend_arrow": "↗",
-    "status_class": "in-range",
-    "uniforms": {"uGlucoseMgDl": 108.0, "uHeartRate": 72.0}
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }
   }
-  ```
-* `bus.js` updates `textContent` and `dataset.status` directly on that specific element and passes `uniforms` straight into the active Three.js shader material—zero HTML string parsing or DOM tree replacements.
+  </script>
+</head>
+<body data-units='{{ user.unit_preferences | tojson }}'>
 
-### 7.2 Three.js Interactive 3D Modules (`three_twin.js`)
-Loaded via native browser `<script type="importmap">` pointing to Three.js ES modules:
-1. **Holographic Biometric Twin:**
-   * Renders a stylized translucent medical wireframe body with custom GLSL shaders and `UnrealBloomPass`.
-   * **Vascular Pulse Uniform (`uHeartRate`):** Modulates the rhythmic shader pulse frequency to match your live Watch 9 heart rate.
-   * **Metabolic Core Aura (`uGlucoseMgDl`):** Shifts core luminescence smoothly from cyan/emerald ($70\text{–}140\text{ mg/dL}$) to amber ($140\text{–}180\text{ mg/dL}$) to pulsing crimson ($>180$ or $<70\text{ mg/dL}$).
-   * **Body Composition Layers:** Clicking the torso or limbs isolates the Muscle Mass vs. Body Fat shader layers and opens the live BIA formula comparison overlay.
-2. **3D Chrono-Metabolic Ribbon:**
-   * Plots a 3D spline ribbon across the last 24–72 hours where **X = Time**, **Y = Glucose ($mg/dL$)**, and **Z = Heart Rate / Step Cadence**.
-   * Meal events float as interactive 3D icosahedron nodes along the ribbon; clicking a node opens its meal photo and portion slider.
-   * Sedentary "At Keyboard" intervals vs. active "Lawn Mowing" intervals render as color-coded ground plane zones beneath the ribbon.
+  <!-- 1. Universal Header -->
+  <header class="app-header">
+    <div class="brand-cluster">
+      <span class="brand-glyph" aria-hidden="true"></span>
+      <span class="brand-title">Body Language</span>
+      <!-- Always-available Undulating Horizontal Tri-Dot Activity Indicator -->
+      <output id="global-activity-indicator"
+              class="tri-dot-loader"
+              role="status"
+              aria-live="polite"
+              aria-label="Synchronizing telemetry"
+              hidden>
+        <span class="dot"></span>
+        <span class="dot"></span>
+        <span class="dot"></span>
+      </output>
+    </div>
 
-### 7.3 Mobile & Desktop Responsiveness (`hud.css`)
-* **Desktop (Chrome Widescreen):** 3-column Futuristic HUD layout—Left: Vitals, CGM & Scale Cards; Center: Interactive Three.js 3D Viewport / Geofence Map toggle; Right: AI Meal Logger, Sedentary/Activity Correlator & Formula Inspector.
-* **Mobile (S26 Ultra Chrome):** CSS Grid collapses into a touch-friendly bottom-tabbed HUD dock with full-bleed 3D touch-orbit support and instant camera snap for meal logging.
+    <!-- Primary Structural Navigation -->
+    <nav class="app-nav" aria-label="Primary Views">
+      <button type="button" data-view-target="twin" aria-current="page">Biometric Twin</button>
+      <button type="button" data-view-target="ribbon">Metabolic Ribbon</button>
+      <button type="button" data-view-target="geofence">Geofence &amp; Context</button>
+    </nav>
+
+    <!-- Top-Right Presence Cluster + User Profile Avatar + Kebab Menu -->
+    <div class="presence-and-profile">
+      <!-- Google Docs-style Live Presence Indicators (Who is viewing this profile) -->
+      <div class="presence-strip" data-telemetry-id="presence-strip" aria-label="Active viewers"></div>
+
+      <!-- Offline Queue Indicator Badge -->
+      <span class="offline-queue-pill" data-telemetry-id="offline-queue-count" hidden>0 queued</span>
+
+      <!-- User Profile Avatar with Key Renewal Notification Badge -->
+      <div class="profile-cluster">
+        <button type="button" class="avatar-button" data-overlay-open="dialog-profile-options">
+          <img src="{{ user.avatar_url or '/static/img/default-avatar.svg' }}" alt="{{ user.display_name }}" class="avatar-img">
+          <span class="avatar-alert-badge" data-telemetry-id="avatar-key-badge" hidden>0</span>
+        </button>
+
+        <!-- Vertical Tri-Dot Kebab Menu Trigger -->
+        <button type="button"
+                class="kebab-trigger"
+                popovertarget="header-kebab-menu"
+                aria-label="Open Actions Menu">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/>
+          </svg>
+        </button>
+
+        <!-- Kebab Popover Menu -->
+        <menu id="header-kebab-menu" popover="auto" class="kebab-popover">
+          <li><button type="button" data-overlay-open="dialog-meal-logger">Log Meal / Scan Label</button></li>
+          <li><button type="button" data-overlay-open="dialog-bia-formulas">Scale BIA Equations</button></li>
+          <li><button type="button" data-overlay-open="dialog-credential-vault">Encrypted Key Vault</button></li>
+          <li><button type="button" data-overlay-open="dialog-tunables-editor">System Tunables</button></li>
+          <li><button type="button" data-overlay-open="dialog-profile-options">Profile &amp; Theme Options</button></li>
+        </menu>
+      </div>
+    </div>
+  </header>
+
+  <!-- 2. Universal Main Body -->
+  <main class="app-main">
+    {% block main_content %}{% endblock %}
+  </main>
+
+  <!-- 3. Universal Context Aside -->
+  <aside class="app-aside" aria-label="Live Event Stream">
+    {% block aside_content %}{% endblock %}
+  </aside>
+
+  <!-- 4. Universal Footer -->
+  <footer class="app-footer">
+    <span>Blue Labs &bull; Body Language Telemetry Engine</span>
+    <span data-telemetry-id="connection-state">Connected (UTC Sync)</span>
+  </footer>
+
+  <!-- 5. Non-Full-Page Overlay Containers with Blurred Scrim (<dialog>) -->
+  {% include "partials/overlays.html.j2" %}
+
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>
+```
 
 ---
 
-## 8. S26 Ultra & Workstation Context Ingestion
+### 7.2 Nested & Layered CSS with `oklch(from ...)` Relative Coloration (`src/body_language/web/static/css/main.css`)
 
-### 8.1 S26 Ultra Gateway (`POST /api/v1/ingest/mobile`)
-Authenticated via a per-user bearer key stored in `credential_vault` (`provider = 's26_gateway'`). Accepts batched or real-time JSON payloads from an Android Health Connect companion app (or Tasker / Health Connect webhook):
-```json
-{
-  "timestamp": "2026-11-01T19:30:00Z",
-  "location": {"lat": 37.7749, "lon": -122.4194, "accuracy_m": 4.5},
-  "posture_state": "WALKING",
-  "vitals": [
-    {"metric_type": "heart_rate", "value": 114, "unit": "bpm"},
-    {"metric_type": "spo2", "value": 98, "unit": "%"},
-    {"metric_type": "steps_delta", "value": 85, "unit": "count"}
-  ]
+All colors across the entire application derive mathematically from three root seed variables (`--theme-luminance`, `--theme-chroma`, `--theme-hue`) per theme, combined with light/dark/device polarity.
+
+```css
+@layer reset, tokens, themes, layout, components, overlays, utilities;
+
+@layer themes {
+  /* 1. Futuristic Sci-Fi Medicine (Default Cyan/Sapphire Medical HUD) */
+  [data-theme='future-medicine'] {
+    --theme-luminance: 0.50;
+    --theme-chroma: 0.07;
+    --theme-hue: 247;
+    --accent-hue: 195;
+  }
+
+  /* 2. Black Cat (Obsidian Panther with Warm Amber/Gold Eye Accents) */
+  [data-theme='black-cat'] {
+    --theme-luminance: 0.36;
+    --theme-chroma: 0.025;
+    --theme-hue: 285;
+    --accent-hue: 78;
+  }
+
+  /* 3. Forestry (Deep Pine Canopy, Moss & Warm Birch Bark) */
+  [data-theme='forestry'] {
+    --theme-luminance: 0.46;
+    --theme-chroma: 0.065;
+    --theme-hue: 148;
+    --accent-hue: 110;
+  }
+
+  /* Color Mode Polarity: Light / Dark / Device-Driven */
+  [data-color-mode='device'] { color-scheme: light dark; }
+  [data-color-mode='light']  { color-scheme: light; }
+  [data-color-mode='dark']   { color-scheme: dark; }
+}
+
+@layer tokens {
+  :root {
+    /* Seed Base Color */
+    --seed-color: oklch(var(--theme-luminance) var(--theme-chroma) var(--theme-hue));
+
+    /* Surface Hierarchy Derived Strictly via oklch(from ...) */
+    --surface-canvas: light-dark(
+      oklch(from var(--seed-color) calc(l + 0.44) calc(c * 0.35) h),
+      oklch(from var(--seed-color) calc(l - 0.34) calc(c * 0.85) h)
+    );
+    --surface-card: oklch(from var(--surface-canvas) calc(l + 0.04) c h);
+    --surface-elevated: oklch(from var(--surface-canvas) calc(l + 0.08) calc(c * 1.1) h);
+    --surface-border: oklch(from var(--surface-canvas) calc(l + 0.16) c h / 0.45);
+
+    /* Table Striping Derived from Table Base */
+    --table-background-color: var(--surface-card);
+    --table-row-background-color-odd: oklch(from var(--table-background-color) calc(l + 0.05) c h);
+    --table-row-background-color-even: oklch(from var(--table-background-color) calc(l - 0.05) c h);
+
+    /* Text & Interactive Accent Tokens */
+    --text-primary: light-dark(
+      oklch(from var(--seed-color) 0.18 calc(c * 0.5) h),
+      oklch(from var(--seed-color) 0.94 calc(c * 0.4) h)
+    );
+    --text-muted: oklch(from var(--text-primary) calc(l - 0.25) calc(c * 0.7) h);
+    --accent-primary: oklch(from var(--seed-color) 0.72 calc(c * 2.1) var(--accent-hue));
+    --status-ok: oklch(from var(--seed-color) 0.74 0.16 152);
+    --status-warn: oklch(from var(--seed-color) 0.78 0.17 75);
+    --status-danger: oklch(from var(--seed-color) 0.65 0.22 25);
+  }
+}
+
+@layer components {
+  /* Top-Right Google Docs-Style Presence Strip & Avatar */
+  .presence-and-profile {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+
+    & .presence-strip {
+      display: flex;
+      align-items: center;
+
+      & .presence-pill {
+        width: 2rem;
+        height: 2rem;
+        border-radius: 999px;
+        border: 2px solid var(--accent-primary);
+        background: var(--surface-elevated);
+        margin-inline-start: -0.45rem;
+        position: relative;
+        transition: transform 160ms ease;
+
+        &:hover {
+          transform: translateY(-2px) scale(1.08);
+          z-index: 5;
+        }
+
+        &::after {
+          content: "";
+          position: absolute;
+          inset-block-end: 0;
+          inset-inline-end: 0;
+          width: 0.55rem;
+          height: 0.55rem;
+          border-radius: 50%;
+          background: var(--status-ok);
+        }
+      }
+    }
+
+    & .kebab-trigger {
+      display: inline-grid;
+      place-items: center;
+      padding: 0.4rem;
+      border-radius: 0.5rem;
+      background: transparent;
+      color: var(--text-primary);
+      border: 1px solid transparent;
+      cursor: pointer;
+
+      &:hover {
+        background: oklch(from var(--surface-card) calc(l + 0.06) c h);
+        border-color: var(--surface-border);
+      }
+    }
+  }
+
+  /* Undulating Horizontal Tri-Dot Loader (Driven by requestAnimationFrame) */
+  .tri-dot-loader {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding-inline: 0.5rem;
+
+    &[hidden] { display: none; }
+
+    & .dot {
+      width: 0.48rem;
+      height: 0.48rem;
+      border-radius: 50%;
+      background: var(--accent-primary);
+      transform: translateY(var(--dot-y, 0px)) scale(var(--dot-scale, 1));
+      opacity: var(--dot-alpha, 0.85);
+      will-change: transform, opacity;
+    }
+  }
+}
+
+@layer overlays {
+  /* Blurred Scrim Overlay for Non-Full-Page Containers */
+  dialog.scrim-overlay {
+    background: oklch(from var(--surface-elevated) l c h / 0.92);
+    color: var(--text-primary);
+    border: 1px solid var(--surface-border);
+    border-radius: 1rem;
+    padding: 1.5rem;
+    max-width: min(92vw, 44rem);
+    box-shadow: 0 24px 64px oklch(0 0 0 / 0.45);
+
+    &::backdrop {
+      background: oklch(from var(--surface-canvas) calc(l - 0.15) c h / 0.55);
+      backdrop-filter: blur(12px) saturate(130%);
+    }
+  }
 }
 ```
-Upon receipt, `geofence_engine.py` runs a PostGIS query:
-```sql
-SELECT id, label, activity_category
-FROM geofences
-WHERE user_id = :uid
-  AND ST_Contains(boundary, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326))
-LIMIT 1;
-```
-This automatically tags whether you are inside the **Yard/Lawn** polygon, **Home**, or **Gym**, correlating physical location with heart rate and glucose trends.
-
-### 8.2 Workstation "At Keyboard" Daemon (`workstation_daemon.py`)
-A lightweight background script on your Linux workstation that checks X11/Wayland idle time and keystroke cadence every 60 seconds. When active at the keyboard, it sends `posture_state = 'AT_KEYBOARD'` to the local FastAPI endpoint so you can quantify "sitting in the chair" hours vs. active periods.
 
 ---
 
-## 9. Deployment & Bootstrap Checklist (`bodylanguage.blue-labs.org`)
+### 7.3 `requestAnimationFrame` Undulating Tri-Dot Activity Controller (`src/body_language/web/static/js/activity_indicator.js`)
 
-### Step 1: Install System Dependencies (Arch / Ubuntu)
-```bash
-# Arch Linux
-sudo pacman -S postgresql timescaledb postgis python poetry nginx certbot-nginx bluez bluez-utils ollama
+Guarantees immediate visual feedback using a sinusoidal wave driven by `requestAnimationFrame` whenever any network fetch, WebSocket command,BLE query, or AI inference is in flight.
 
-# Ubuntu
-sudo apt install postgresql timescaledb-2-postgresql-16 postgresql-16-postgis-3 python3-poetry nginx certbot python3-certbot-nginx bluez
-```
+```javascript
+export class ActivityIndicator {
+  #activeTasks = new Set();
+  #rafId = null;
+  #container;
+  #dots;
 
-### Step 2: Initialize PostgreSQL + TimescaleDB + PostGIS
-```bash
-sudo -u postgres psql -c "CREATE DATABASE body_language;"
-sudo -u postgres psql -d body_language -f migrations/001_initial_schema.sql
-```
+  constructor(selector = "#global-activity-indicator") {
+    this.#container = document.querySelector(selector);
+    this.#dots = this.#container ? Array.from(this.#container.querySelectorAll(".dot")) : [];
+  }
 
-### Step 3: Pull Local Vision Model on RTX 3090
-```bash
-ollama pull qwen2.5vl:7b
-```
+  begin(taskId = crypto.randomUUID()) {
+    this.#activeTasks.add(taskId);
+    if (this.#container && this.#container.hidden) {
+      this.#container.hidden = false;
+      this.#rafId = requestAnimationFrame((ts) => this.#animate(ts));
+    }
+    return () => this.end(taskId);
+  }
 
-### Step 4: Generate Master Vault Key & Configure Environment
-```bash
-poetry install
-poetry run python -c "from cryptography.fernet import Fernet; print('BLUELABS_MASTER_KEY=' + Fernet.generate_key().decode())" >> .env
-```
+  end(taskId) {
+    this.#activeTasks.delete(taskId);
+    if (this.#activeTasks.size === 0 && this.#container) {
+      if (this.#rafId) cancelAnimationFrame(this.#rafId);
+      this.#rafId = null;
+      this.#container.hidden = true;
+    }
+  }
 
-### Step 5: Provision TLS Certificate & Start Services
-```bash
-sudo cp deploy/nginx/bodylanguage.blue-labs.org.conf /etc/nginx/sites-available/
-sudo ln -s /etc/nginx/sites-available/bodylanguage.blue-labs.org.conf /etc/nginx/sites-enabled/
-sudo certbot --nginx -d bodylanguage.blue-labs.org
-sudo systemctl enable --now body-language-web.service body-language-ble.service
+  #animate(timestamp) {
+    if (this.#activeTasks.size === 0) return;
+    const t = timestamp * 0.0065;
+
+    this.#dots.forEach((dot, idx) => {
+      const phase = t - idx * 0.85;
+      const wave = Math.sin(phase);
+      const yOffset = (wave * 4.5).toFixed(2);
+      const scale = (1 + wave * 0.22).toFixed(3);
+      const alpha = (0.65 + (wave + 1) * 0.175).toFixed(2);
+
+      dot.style.setProperty("--dot-y", `${yOffset}px`);
+      dot.style.setProperty("--dot-scale", scale);
+      dot.style.setProperty("--dot-alpha", alpha);
+    });
+
+    this.#rafId = requestAnimationFrame((ts) => this.#animate(ts));
+  }
+}
+
+export const activity = new ActivityIndicator();
 ```
 
 ---
 
-## 10. Phased Implementation Roadmap
+### 7.4 Offline Write-Safety Queue & Anticipatory Loader (`src/body_language/web/static/js/offline_queue.js`)
 
-* **Phase 1: Core Skeleton, DB & Auth/Vault**
+Enqueues all user mutations (`meal_logs`, `profile_options`, `geofence` edits, `tunables`) in `localStorage` before transmission, ensuring zero data loss during connectivity drops or server restarts.
+
+```javascript
+import { activity } from "./activity_indicator.js";
+
+const STORAGE_KEY = "bluelabs_write_ahead_queue_v1";
+
+export class ResilientWriteQueue {
+  constructor() {
+    window.addEventListener("online", () => this.flush());
+  }
+
+  #readQueue() {
+    try {
+      return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+    } catch {
+      return [];
+    }
+  }
+
+  #writeQueue(items) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+    const badge = document.querySelector('[data-telemetry-id="offline-queue-count"]');
+    if (badge) {
+      badge.hidden = items.length === 0;
+      badge.textContent = `${items.length} queued`;
+    }
+  }
+
+  async enqueueAndSend(endpoint, method, payload) {
+    const mutation = {
+      client_mutation_id: payload.client_mutation_id || crypto.randomUUID(),
+      recorded_at_utc: new Date().toISOString(),
+      endpoint,
+      method,
+      payload,
+    };
+
+    const queue = this.#readQueue();
+    queue.push(mutation);
+    this.#writeQueue(queue);
+
+    return this.flush();
+  }
+
+  async flush() {
+    if (!navigator.onLine) return;
+    const queue = this.#readQueue();
+    if (queue.length === 0) return;
+
+    const stopActivity = activity.begin("flush-offline-queue");
+    const remaining = [];
+
+    for (const item of queue) {
+      try {
+        const res = await fetch(item.endpoint, {
+          method: item.method,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...item.payload,
+            client_mutation_id: item.client_mutation_id,
+            recorded_at_utc: item.recorded_at_utc,
+          }),
+        });
+        if (!res.ok && res.status >= 500) {
+          remaining.push(item);
+        }
+      } catch {
+        remaining.push(item);
+      }
+    }
+
+    this.#writeQueue(remaining);
+    stopActivity();
+  }
+}
+```
+
+---
+
+### 7.5 Final-Layer UTC-to-Local Time & Unit of Measure Formatter (`src/body_language/web/static/js/units_time.js`)
+
+All backend and WebSocket payloads remain strictly in canonical UTC and metric/canonical units until rendered into DOM text nodes by this module.
+
+```javascript
+export class UserPresentationFormatter {
+  constructor(unitPreferences) {
+    this.units = unitPreferences;
+    this.timeFormatter = new Intl.DateTimeFormat(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      month: "short",
+      day: "numeric",
+    });
+  }
+
+  formatTimestamp(utcIsoString) {
+    const date = new Date(utcIsoString);
+    return this.timeFormatter.format(date);
+  }
+
+  formatGlucose(mgDl) {
+    if (this.units.glucose === "mmol/L") {
+      return `${(mgDl / 18.0182).toFixed(1)} mmol/L`;
+    }
+    return `${Math.round(mgDl)} mg/dL`;
+  }
+
+  formatMass(kg) {
+    if (this.units.mass === "lbs") {
+      return `${(kg * 2.20462262).toFixed(1)} lbs`;
+    }
+    return `${Number(kg).toFixed(2)} kg`;
+  }
+
+  formatTemperature(celsius) {
+    if (this.units.temperature === "F") {
+      return `${((celsius * 9) / 5 + 32).toFixed(1)} °F`;
+    }
+    return `${Number(celsius).toFixed(1)} °C`;
+  }
+}
+```
+
+---
+
+## 8. Pragmatic Pytest Suite Specification (`tests/`)
+
+Focused, high-value unit tests verifying mathematical accuracy, UTC timestamp enforcement, `tunables` fallback behavior, encryption round-trips, and offline queue idempotency:
+
+1. **`tests/test_bia_formulas.py`:** Tests `calculate_bia_composition()` against known male/female heights, ages, weights, and impedances ($\Omega$), verifying exact BMI, Lean Body Mass, Body Fat %, and Visceral Fat boundaries.
+2. **`tests/test_pydantic_utc_schemas.py`:** Verifies that naive datetimes or non-UTC timezone offsets submitted by clients are automatically normalized to `timezone.utc`, and invalid `ThemeName` or `UnitPreferences` values raise `ValidationError`.
+3. **`tests/test_tunables_registry.py`:** Verifies type-safe generic retrieval `tunables.get("dexcom.poll_interval_seconds", 300)` and hot-reload cache updates.
+4. **`tests/test_crypto_vault.py`:** Verifies `CredentialVaultCrypto` Fernet round-trips and `evaluate_key_health()` state transitions (`valid` $\rightarrow$ `expiring_soon` $\rightarrow$ `expired`).
+5. **`tests/test_offline_idempotency.py`:** Verifies that replaying a `TelemetryMutationPayload` with the same `client_mutation_id` is safely deduplicated without raising unhandled integrity errors.
+
+---
+
+## 9. Phased Implementation Roadmap
+
+* **Phase 1: Core Skeleton, `tunables` Meta Table, Auth & Vault**
   * Initialize Poetry project, SQLAlchemy 2.0 async engine, and run `001_initial_schema.sql`.
+  * Implement `TunablesRegistry` with PostgreSQL `LISTEN/NOTIFY` hot-reloading.
   * Implement Google OAuth2 + WebAuthn Passkey + TOTP + 7-day rolling cookie.
-  * Build Encrypted Credential Vault UI and Avatar Expiration Notification drawer.
-* **Phase 2: Telemetry Ingestion Daemons**
-  * Deploy `dexcom_poller.py` (using encrypted user credentials from the Vault).
-  * Calibrate `scale_ble.py` against the Ablegrid `FI2016LB` raw byte frame and build the BIA Formula Comparator UI.
+  * Build Encrypted Credential Vault UI and Avatar Expiration Notification badge.
+* **Phase 2: Structural Shell, `oklch` Theme Engine & Resilient Event Bus**
+  * Build `base.html.j2` (`<header>`, `<nav>`, `<main>`, `<aside>`, `<footer>`, `<dialog class="scrim-overlay">`, and kebab `⋮` popovers).
+  * Implement `main.css` with `@layer`, CSS nesting, and `oklch(from ...)` relative color derivations for `future-medicine`, `black-cat`, and `forestry` across `light`, `dark`, and `device` modes.
+  * Wire `activity_indicator.js` (`requestAnimationFrame` tri-dot loader), `offline_queue.js`, `units_time.js`, and Google Docs-style live viewer presence pills.
+* **Phase 3: Telemetry Ingestion Daemons & Three.js Viewport**
+  * Deploy `dexcom_poller.py` and `scale_ble.py` (with transparent BIA Formula Inspector overlay).
   * Expose `/api/v1/ingest/mobile` and `/api/v1/ingest/workstation` for Watch 9, S26 Ultra GPS, and keyboard activity tracking.
-* **Phase 3: Futuristic Medical HUD & Three.js Viewport**
-  * Build `base.html.j2`, `hud.css`, and `bus.js` surgical WebSocket updater.
-  * Implement `three_twin.js` (Holographic Body Avatar + 3D Chrono-Metabolic Ribbon).
-  * Build `geofence_editor.js` with Google Maps polygon drawing and PostGIS persistence.
-* **Phase 4: Two-Pass AI Meal Logger**
-  * Wire `meal_vision.py` to local RTX 3090 Ollama (`qwen2.5vl:7b`) and Cloud Vision API fallback.
-  * Build `meal_adjuster.js` with live consumed-percentage sliders and per-ingredient toggles.
+  * Implement `three_twin.js` (Holographic Body Avatar + 3D Chrono-Metabolic Ribbon) and `geofence_editor.js`.
+* **Phase 4: Two-Pass AI Meal Logger & Pytest Verification**
+  * Wire `meal_vision.py` to local RTX 3090 Ollama (`qwen2.5vl:7b`) and Cloud Vision API fallback with live consumed-percentage sliders.
+  * Run the `pytest` verification suite across all core modules.
